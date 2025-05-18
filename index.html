@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pace Tracker</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: auto; }
+  label, input, button { display: block; margin: 10px 0; }
+  input[type="number"] { width: 100%; padding: 8px; }
+  button { padding: 10px; font-size: 16px; cursor: pointer; }
+  #status { margin-top: 20px; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>Pace Tracker</h1>
+
+<label for="targetTime">Target Time (minutes):</label>
+<input type="number" id="targetTime" min="1" value="10" />
+
+<button id="startBtn">Start Run</button>
+
+<div id="status">Set your target time and press Start.</div>
+
+<script>
+  const status = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
+  const targetTimeInput = document.getElementById('targetTime');
+
+  let runStart = null;
+  let timerInterval = null;
+  let speedSamples = [];
+  let lastVoiceTime = 0;
+  let dropSpeedStart = null;
+  let consistentSpeedStart = null;
+  let goalReached = false;
+
+  // Fake speed generator for testing
+  // Replace this with real GPS speed data in a real app
+  function getCurrentSpeed() {
+    // Simulate speed around target pace (in m/s), fluctuate randomly
+    const baseSpeed = targetPaceMps;
+    return baseSpeed + (Math.random() - 0.5) * 0.5; // +-0.25 m/s variance
+  }
+
+  // Target time and distance (assumed 2.5 km for example)
+  const distanceMeters = 2500;
+  let targetTimeSeconds = 600; // default 10 minutes
+  let targetPaceMps = distanceMeters / targetTimeSeconds;
+
+  // Speech helper
+  function speak(text) {
+    if (!window.speechSynthesis) return;
+    if (speechSynthesis.speaking) speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    speechSynthesis.speak(utterance);
+  }
+
+  function updateStatus(text) {
+    status.textContent = text;
+  }
+
+  function checkVoiceFeedback(elapsed) {
+    // Every 10 seconds voice feedback, but avoid overlapping messages
+    const now = Date.now();
+
+    // Time-based goals progress
+    let progressText = '';
+    if (elapsed >= 0.25 * targetTimeSeconds && elapsed < 0.25 * targetTimeSeconds + 5) {
+      progressText = "25% done, keep going, you're doing great!";
+    } else if (elapsed >= targetTimeSeconds) {
+      goalReached = true;
+      progressText = "Great job! You achieved your goal!";
+    }
+
+    if (progressText) {
+      speak(progressText);
+      updateStatus(progressText);
+      lastVoiceTime = now;
+      return true; // spoke a message, skip pace voice for now
+    }
+
+    // Pace feedback
+    const recentSpeeds = speedSamples.slice(-5);
+    const avgSpeed = recentSpeeds.reduce((a,b) => a+b,0) / recentSpeeds.length || 0;
+
+    // Check if speed dropped below target for 30 seconds
+    if (avgSpeed < targetPaceMps * 0.95) { // 5% tolerance
+      if (!dropSpeedStart) dropSpeedStart = elapsed;
+      else if (elapsed - dropSpeedStart >= 30) {
+        speak("You’ve slowed down a bit — pick up the pace.");
+        updateStatus("You’ve slowed down a bit — pick up the pace.");
+        dropSpeedStart = null;
+        lastVoiceTime = now;
+        return true;
+      }
+    } else {
+      dropSpeedStart = null;
+    }
+
+    // Check if speed maintained within 5% for 2+ minutes
+    if (avgSpeed >= targetPaceMps * 0.95 && avgSpeed <= targetPaceMps * 1.05) {
+      if (!consistentSpeedStart) consistentSpeedStart = elapsed;
+      else if (elapsed - consistentSpeedStart >= 120) {
+        speak("Consistent pace. Excellent control.");
+        updateStatus("Consistent pace. Excellent control.");
+        consistentSpeedStart = null;
+        lastVoiceTime = now;
+        return true;
+      }
+    } else {
+      consistentSpeedStart = null;
+    }
+
+    // General pace feedback every 10 seconds
+    if (now - lastVoiceTime > 10000) {
+      if (avgSpeed < targetPaceMps) {
+        speak("Your pace is a bit slow, try to speed up.");
+        updateStatus("Your pace is a bit slow, try to speed up.");
+      } else if (avgSpeed > targetPaceMps) {
+        speak("You're above pace, good job!");
+        updateStatus("You're above pace, good job!");
+      } else {
+        speak("You're on pace, keep it up!");
+        updateStatus("You're on pace, keep it up!");
+      }
+      lastVoiceTime = now;
+      return true;
+    }
+    return false;
+  }
+
+  function runTracker() {
+    const elapsed = (Date.now() - runStart) / 1000;
+
+    if (goalReached) {
+      clearInterval(timerInterval);
+      updateStatus("Run complete! Well done!");
+      speak("Run complete! Well done!");
+      return;
+    }
+
+    // Simulate current speed reading
+    const speed = getCurrentSpeed();
+    speedSamples.push(speed);
+    if (speedSamples.length > 50) speedSamples.shift();
+
+    checkVoiceFeedback(elapsed);
+  }
+
+  startBtn.addEventListener('click', () => {
+    if (timerInterval) {
+      clearInterval(timerInterval);
+      timerInterval = null;
+      updateStatus("Run stopped.");
+      startBtn.textContent = "Start Run";
+      return;
+    }
+
+    // Read and set target time
+    const targetMinutes = Number(targetTimeInput.value);
+    if (!targetMinutes || targetMinutes <= 0) {
+      alert("Please enter a valid target time in minutes.");
+      return;
+    }
+
+    targetTimeSeconds = targetMinutes * 60;
+    targetPaceMps = distanceMeters / targetTimeSeconds;
+
+    runStart = Date.now();
+    speedSamples = [];
+    lastVoiceTime = 0;
+    dropSpeedStart = null;
+    consistentSpeedStart = null;
+    goalReached = false;
+
+    updateStatus("Run started. Good luck!");
+    speak("Run started. Good luck!");
+    startBtn.textContent = "Stop Run";
+
+    timerInterval = setInterval(runTracker, 1000);
+  });
+</script>
+
+</body>
+</html>
