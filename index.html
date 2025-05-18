@@ -1,98 +1,227 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Pace Tracker</title>
   <style>
-    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
-    input, button { margin: 10px; padding: 10px; font-size: 16px; }
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 600px; margin: auto; }
+    label, input, button { display: block; margin: 10px 0; }
+    input[type="number"] { width: 100%; padding: 8px; }
+    button { padding: 10px; font-size: 16px; cursor: pointer; }
+    #status { margin-top: 20px; font-weight: bold; }
   </style>
 </head>
 <body>
-  <h1>Pace Tracker</h1>
 
-  <label>Distance Goal (km): <input id="distanceGoal" type="number" step="0.1"></label><br>
-  <label>Time Goal (minutes): <input id="timeGoal" type="number" step="1"></label><br>
-  <button onclick="startRun()">Start Run</button>
+<h1>Pace Tracker</h1>
 
-  <h3 id="status">Status: Not started</h3>
-  <p id="speedInfo"></p>
-  <p id="distanceInfo"></p>
-  <p id="paceInfo"></p>
+<label for="targetTime">Target Time (minutes):</label>
+<input type="number" id="targetTime" min="1" value="10" />
 
-  <script>
-    let watchId;
-    let startTime;
-    let totalDistance = 0;
-    let lastCoords = null;
-    let intervalId;
-    let goalTime, goalDistance, targetSpeed;
-    let timeAnnouncements = [0.25, 0.5, 0.75];
-    let consistentTime = 0;
-    let lastSpeed = null;
+<button id="startBtn">Start Run</button>
 
-    function speak(msg) {
-      const utterance = new SpeechSynthesisUtterance(msg);
-      speechSynthesis.speak(utterance);
+<div id="status">Set your target time and press Start.</div>
+
+<script>
+  const status = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
+  const targetTimeInput = document.getElementById('targetTime');
+
+  let runStart = null;
+  let timerInterval = null;
+  let watchId = null;
+  let lastPosition = null;
+  let totalDistance = 0;
+  let speedSamples = [];
+  let lastVoiceTime = 0;
+  let dropSpeedStart = null;
+  let consistentSpeedStart = null;
+  let goalReached = false;
+
+  const distanceMeters = 2500;
+  let targetTimeSeconds = 600;
+  let targetPaceMps = distanceMeters / targetTimeSeconds;
+
+  function speak(text) {
+    if (!window.speechSynthesis) return;
+    if (speechSynthesis.speaking) speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    speechSynthesis.speak(utterance);
+  }
+
+  function updateStatus(text) {
+    status.textContent = text;
+  }
+
+  function getDistance(pos1, pos2) {
+    const toRad = deg => deg * Math.PI / 180;
+    const R = 6371000; // Earth radius in meters
+    const dLat = toRad(pos2.latitude - pos1.latitude);
+    const dLon = toRad(pos2.longitude - pos1.longitude);
+    const a =
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(toRad(pos1.latitude)) * Math.cos(toRad(pos2.latitude)) *
+      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+  }
+
+  function checkVoiceFeedback(elapsed, currentSpeed) {
+    const now = Date.now();
+
+    // Check progress
+    if (elapsed >= 0.25 * targetTimeSeconds && elapsed < 0.25 * targetTimeSeconds + 5) {
+      speak(`25% done. You've run ${Math.round(totalDistance)} meters. Keep going!`);
+      updateStatus("25% done. Keep going!");
+      lastVoiceTime = now;
+      return true;
+    } else if (elapsed >= targetTimeSeconds && !goalReached) {
+      goalReached = true;
+      speak("Great job! You achieved your goal!");
+      updateStatus("Great job! You achieved your goal!");
+      return true;
     }
 
-    function startRun() {
-      totalDistance = 0;
-      lastCoords = null;
-      startTime = Date.now();
-      consistentTime = 0;
+    // Pace feedback
+    const avgSpeed = speedSamples.reduce((a, b) => a + b, 0) / speedSamples.length || 0;
 
-      const d = parseFloat(document.getElementById('distanceGoal').value);
-      const t = parseFloat(document.getElementById('timeGoal').value);
-
-      if (!d || !t) return alert("Please enter both distance and time goals.");
-
-      goalDistance = d * 1000; // in meters
-      goalTime = t * 60; // in seconds
-      targetSpeed = goalDistance / goalTime;
-
-      document.getElementById('status').innerText = "Status: Running";
-
-      if (!navigator.geolocation) {
-        alert("Geolocation not supported.");
-        return;
+    if (avgSpeed < targetPaceMps * 0.95) {
+      if (!dropSpeedStart) dropSpeedStart = elapsed;
+      else if (elapsed - dropSpeedStart >= 30) {
+        speak("You’ve slowed down a bit — pick up the pace.");
+        updateStatus("You’ve slowed down a bit — pick up the pace.");
+        dropSpeedStart = null;
+        lastVoiceTime = now;
+        return true;
       }
-
-      speak("Run started. Keep your pace steady!");
-
-      watchId = navigator.geolocation.watchPosition(updatePosition, () => {
-        alert("Unable to track location.");
-      }, { enableHighAccuracy: true });
-
-      intervalId = setInterval(checkProgress, 10000);
+    } else {
+      dropSpeedStart = null;
     }
 
-    function updatePosition(pos) {
-      const { latitude, longitude, speed } = pos.coords;
-
-      if (lastCoords) {
-        const dist = getDistanceFromLatLonInMeters(lastCoords.lat, lastCoords.lon, latitude, longitude);
-        totalDistance += dist;
+    if (avgSpeed >= targetPaceMps * 0.95 && avgSpeed <= targetPaceMps * 1.05) {
+      if (!consistentSpeedStart) consistentSpeedStart = elapsed;
+      else if (elapsed - consistentSpeedStart >= 120) {
+        speak("Consistent pace. Excellent control.");
+        updateStatus("Consistent pace. Excellent control.");
+        consistentSpeedStart = null;
+        lastVoiceTime = now;
+        return true;
       }
+    } else {
+      consistentSpeedStart = null;
+    }
 
-      lastCoords = { lat: latitude, lon: longitude };
+    // General feedback
+    if (now - lastVoiceTime > 10000) {
+      if (avgSpeed < targetPaceMps) {
+        speak("You're going a bit slow, try to speed up.");
+        updateStatus("You're going a bit slow.");
+      } else {
+        speak("Good pace. Keep it up!");
+        updateStatus("Good pace. Keep it up!");
+      }
+      lastVoiceTime = now;
+    }
 
-      let currentSpeed = speed || 0;
-      lastSpeed = currentSpeed;
+    return false;
+  }
 
-      document.getElementById("speedInfo").innerText = `Current Speed: ${currentSpeed.toFixed(2)} m/s`;
-      document.getElementById("distanceInfo").innerText = `Distance Run: ${totalDistance.toFixed(1)} m`;
-      document.getElementById("paceInfo").innerText = `Target Speed: ${targetSpeed.toFixed(2)} m/s`;
+  function handleLocation(position) {
+    const { latitude, longitude, speed } = position.coords;
+    const currentTime = Date.now();
+    const elapsed = (currentTime - runStart) / 1000;
 
-      if (totalDistance >= goalDistance) {
-        endRun();
+    // Calculate distance
+    if (lastPosition) {
+      const dist = getDistance(lastPosition, { latitude, longitude });
+      totalDistance += dist;
+    }
+
+    lastPosition = { latitude, longitude };
+
+    // Calculate speed (fallback if position.coords.speed is null)
+    let currentSpeed = speed;
+    if (currentSpeed == null) {
+      currentSpeed = speedSamples.length > 0 ? speedSamples[speedSamples.length - 1] : 0;
+    }
+
+    // Estimate speed manually if needed
+    if (speed == null && lastPosition.timestamp && position.timestamp) {
+      const deltaTime = (position.timestamp - lastPosition.timestamp) / 1000;
+      if (deltaTime > 0) {
+        currentSpeed = getDistance(lastPosition, { latitude, longitude }) / deltaTime;
       }
     }
 
-    function checkProgress() {
-      const timeElapsed = (Date.now() - startTime) / 1000;
-      const pacePercent = totalDistance / goalDistance;
+    speedSamples.push(currentSpeed);
+    if (speedSamples.length > 50) speedSamples.shift();
 
-      // Time-based motivation
-      for (let i = 0; i < timeAnnouncements.length; i++) {
-        if (pacePercent >= timeAnnouncements[i]) {
-          const msg = `You're ${timeAnnouncements[i]
+    // Feedback
+    checkVoiceFeedback(elapsed, currentSpeed);
+  }
+
+  startBtn.addEventListener('click', () => {
+    if (timerInterval || watchId !== null) {
+      clearInterval(timerInterval);
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      timerInterval = null;
+      watchId = null;
+      updateStatus("Run stopped.");
+      startBtn.textContent = "Start Run";
+      return;
+    }
+
+    const targetMinutes = Number(targetTimeInput.value);
+    if (!targetMinutes || targetMinutes <= 0) {
+      alert("Please enter a valid target time in minutes.");
+      return;
+    }
+
+    targetTimeSeconds = targetMinutes * 60;
+    targetPaceMps = distanceMeters / targetTimeSeconds;
+
+    runStart = Date.now();
+    totalDistance = 0;
+    lastPosition = null;
+    speedSamples = [];
+    goalReached = false;
+    dropSpeedStart = null;
+    consistentSpeedStart = null;
+    lastVoiceTime = 0;
+
+    updateStatus("Run started. Getting location...");
+    speak("Run started. Let's go!");
+
+    startBtn.textContent = "Stop Run";
+
+    if (navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(handleLocation, (err) => {
+        alert("Error getting location: " + err.message);
+        updateStatus("Location error.");
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: 1000,
+        timeout: 10000
+      });
+    } else {
+      alert("Geolocation is not supported by your browser.");
+    }
+
+    timerInterval = setInterval(() => {
+      const elapsed = (Date.now() - runStart) / 1000;
+      if (goalReached) {
+        clearInterval(timerInterval);
+        navigator.geolocation.clearWatch(watchId);
+        updateStatus("Run complete! Total distance: " + Math.round(totalDistance) + " m.");
+        speak("Run complete! Total distance: " + Math.round(totalDistance) + " meters. Well done!");
+        timerInterval = null;
+        watchId = null;
+        startBtn.textContent = "Start Run";
+      }
+    }, 1000);
+  });
+</script>
+
+</body>
+</html>
