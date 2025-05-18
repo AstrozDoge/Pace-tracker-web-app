@@ -3,120 +3,96 @@
 <head>
   <title>Pace Tracker</title>
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; }
-    .data { font-size: 18px; margin: 10px 0; }
-    #warning { color: red; font-weight: bold; }
+    body { font-family: Arial, sans-serif; text-align: center; padding: 20px; }
+    input, button { margin: 10px; padding: 10px; font-size: 16px; }
   </style>
 </head>
 <body>
-  <h1>🏃 Pace Tracker</h1>
+  <h1>Pace Tracker</h1>
 
-  <div id="warning"></div>
+  <label>Distance Goal (km): <input id="distanceGoal" type="number" step="0.1"></label><br>
+  <label>Time Goal (minutes): <input id="timeGoal" type="number" step="1"></label><br>
+  <button onclick="startRun()">Start Run</button>
 
-  <div class="data">🎯 Target Pace: <span id="target-speed">3 m/s</span></div>
-  <div class="data">📍 Current Speed: <span id="current-speed">0 m/s</span></div>
-  <div class="data">📏 Distance: <span id="distance">0 m</span></div>
-
-  <button onclick="startTracking()">Start Run</button>
+  <h3 id="status">Status: Not started</h3>
+  <p id="speedInfo"></p>
+  <p id="distanceInfo"></p>
+  <p id="paceInfo"></p>
 
   <script>
     let watchId;
-    let lastPosition = null;
+    let startTime;
     let totalDistance = 0;
-    const targetSpeed = 3; // Target speed in m/s
-    let currentSpeed = 0;
-    let feedbackInterval;
-    let speedFailureCounter = 0;
+    let lastCoords = null;
+    let intervalId;
+    let goalTime, goalDistance, targetSpeed;
+    let timeAnnouncements = [0.25, 0.5, 0.75];
+    let consistentTime = 0;
+    let lastSpeed = null;
 
-    function speak(message) {
-      const utterance = new SpeechSynthesisUtterance(message);
+    function speak(msg) {
+      const utterance = new SpeechSynthesisUtterance(msg);
       speechSynthesis.speak(utterance);
     }
 
-    function startTracking() {
+    function startRun() {
+      totalDistance = 0;
+      lastCoords = null;
+      startTime = Date.now();
+      consistentTime = 0;
+
+      const d = parseFloat(document.getElementById('distanceGoal').value);
+      const t = parseFloat(document.getElementById('timeGoal').value);
+
+      if (!d || !t) return alert("Please enter both distance and time goals.");
+
+      goalDistance = d * 1000; // in meters
+      goalTime = t * 60; // in seconds
+      targetSpeed = goalDistance / goalTime;
+
+      document.getElementById('status').innerText = "Status: Running";
+
       if (!navigator.geolocation) {
-        alert("Geolocation is not supported by your browser.");
+        alert("Geolocation not supported.");
         return;
       }
 
-      watchId = navigator.geolocation.watchPosition(success, error, {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 5000
-      });
+      speak("Run started. Keep your pace steady!");
 
-      feedbackInterval = setInterval(() => {
-        givePaceFeedback();
-      }, 10000);
+      watchId = navigator.geolocation.watchPosition(updatePosition, () => {
+        alert("Unable to track location.");
+      }, { enableHighAccuracy: true });
 
-      alert("Tracking started! Make sure to allow location access.");
+      intervalId = setInterval(checkProgress, 10000);
     }
 
-    function success(position) {
-      const speed = position.coords.speed;
+    function updatePosition(pos) {
+      const { latitude, longitude, speed } = pos.coords;
 
-      // If speed is null for 3 updates, warn the user
-      if (speed == null) {
-        speedFailureCounter++;
-        if (speedFailureCounter >= 3) {
-          document.getElementById("warning").textContent =
-            "⚠️ Your device does not support speed tracking. Please try a different device or browser.";
-        }
-        return;
-      } else {
-        speedFailureCounter = 0;
-        document.getElementById("warning").textContent = "";
-      }
-
-      currentSpeed = speed;
-      document.getElementById("current-speed").textContent = speed.toFixed(2) + " m/s";
-
-      if (lastPosition) {
-        const dist = getDistanceFromLatLonInMeters(
-          lastPosition.coords.latitude,
-          lastPosition.coords.longitude,
-          position.coords.latitude,
-          position.coords.longitude
-        );
+      if (lastCoords) {
+        const dist = getDistanceFromLatLonInMeters(lastCoords.lat, lastCoords.lon, latitude, longitude);
         totalDistance += dist;
-        document.getElementById("distance").textContent = totalDistance.toFixed(2) + " m";
       }
 
-      lastPosition = position;
-    }
+      lastCoords = { lat: latitude, lon: longitude };
 
-    function givePaceFeedback() {
-      if (speedFailureCounter >= 3) return;
+      let currentSpeed = speed || 0;
+      lastSpeed = currentSpeed;
 
-      if (currentSpeed > targetSpeed + 0.2) {
-        speak("You're above pace — good job!");
-      } else if (currentSpeed < targetSpeed - 0.2) {
-        speak("You're below pace — try to speed up a bit!");
-      } else {
-        speak("Perfect pace — keep it going!");
+      document.getElementById("speedInfo").innerText = `Current Speed: ${currentSpeed.toFixed(2)} m/s`;
+      document.getElementById("distanceInfo").innerText = `Distance Run: ${totalDistance.toFixed(1)} m`;
+      document.getElementById("paceInfo").innerText = `Target Speed: ${targetSpeed.toFixed(2)} m/s`;
+
+      if (totalDistance >= goalDistance) {
+        endRun();
       }
     }
 
-    function error(err) {
-      console.warn("ERROR(" + err.code + "): " + err.message);
-    }
+    function checkProgress() {
+      const timeElapsed = (Date.now() - startTime) / 1000;
+      const pacePercent = totalDistance / goalDistance;
 
-    function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
-      const R = 6371000;
-      const dLat = (lat2 - lat1) * Math.PI / 180;
-      const dLon = (lon2 - lon1) * Math.PI / 180;
-      const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) *
-        Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    }
-
-    // Show initial target speed
-    document.getElementById("target-speed").textContent = targetSpeed + " m/s";
-  </script>
-</body>
-</html>
+      // Time-based motivation
+      for (let i = 0; i < timeAnnouncements.length; i++) {
+        if (pacePercent >= timeAnnouncements[i]) {
+          const msg = `You're ${timeAnnouncements[i]
